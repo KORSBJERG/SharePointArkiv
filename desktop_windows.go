@@ -333,7 +333,7 @@ func (d *desktop) build() error {
 		wsTabStop|wsVScroll|esReadOnly|esMultiline|esAutoVScroll, d.logFont, 24, 613, 752, 131)
 	sendMessage.Call(d.liveLog, emSetLimitText, logViewBytes*2, 0)
 
-	label("Overvågningen i appen stopper, når vinduet lukkes.", 24, 763, 478)
+	label("Overvågning startet her stopper, når vinduet lukkes.", 24, 763, 478)
 	button(idHelp, "Vejledning", 535, 754, 108)
 	button(idLog, "Åbn logfil", 651, 754, 125)
 	return firstError

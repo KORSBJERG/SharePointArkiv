@@ -91,7 +91,7 @@ func removeSource(file *os.File) error {
 }
 
 func archiveRunLock(appDir string) (func(), error) {
-	path, err := syscall.UTF16PtrFromString(filepath.Join(appDir, "arkiv.korsel"))
+	path, err := syscall.UTF16PtrFromString(filepath.Join(appDir, archiveRunLockName))
 	if err != nil {
 		return nil, err
 	}

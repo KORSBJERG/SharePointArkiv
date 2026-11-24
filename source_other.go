@@ -36,3 +36,11 @@ func openDesktop(_, _ string) error {
 func archiveRunLock(_ string) (func(), error) {
 	return func() {}, nil
 }
+
+func runWindowsService(_, _ string) error {
+	return errors.New("tjenestetilstand kræver Windows")
+}
+
+func installWindowsService(_, _ string) error {
+	return errors.New("installation af tjenesten kræver Windows")
+}

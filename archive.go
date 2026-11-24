@@ -184,7 +184,7 @@ func sameMetadata(a, b os.FileInfo) bool {
 
 func (a *archiver) verify(ctx context.Context, file *os.File, info os.FileInfo, item driveItem) error {
 	local := sha256.New()
-	if _, err := io.Copy(local, io.NewSectionReader(file, 0, info.Size())); err != nil {
+	if _, err := io.Copy(local, cancellableReader{ctx, io.NewSectionReader(file, 0, info.Size())}); err != nil {
 		return err
 	}
 	body, err := a.remote.download(ctx, item.ID)
@@ -208,4 +208,16 @@ func (a *archiver) verify(ctx context.Context, file *os.File, info os.FileInfo, 
 		return errors.New("SharePoint-filen ændrede sig under kontrollen")
 	}
 	return nil
+}
+
+type cancellableReader struct {
+	ctx context.Context
+	io.Reader
+}
+
+func (r cancellableReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
 }

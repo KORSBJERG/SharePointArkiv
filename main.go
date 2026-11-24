@@ -19,6 +19,7 @@ import (
 )
 
 const applicationName = "PeakNet SharePoint Arkiv"
+const archiveRunLockName = "arkiv.korsel"
 
 type config struct {
 	LocalFolder           string `json:"local_folder"`
@@ -174,15 +175,20 @@ func run() error {
 	once := flag.Bool("once", false, "kør én gennemgang")
 	gui := flag.Bool("gui", desktopAvailable && len(os.Args) == 1, "åbn indstillingsvinduet")
 	newCert := flag.Bool("new-certificate", false, "opret et klientcertifikat ved siden af indstillingerne")
+	service := flag.Bool("service", false, "kør via Windows Tjenester")
+	installService := flag.Bool("install-service", false, "installér Windows-tjenesten som administrator")
 	flag.Parse()
 	var actions int
-	for _, set := range []bool{*watch, *check, *once, *gui, *newCert} {
+	for _, set := range []bool{*watch, *check, *once, *gui, *newCert, *service, *installService} {
 		if set {
 			actions++
 		}
 	}
 	if flag.NArg() != 0 || actions > 1 {
-		return errors.New("vælg højst én af -watch, -check, -once, -gui og -new-certificate")
+		return errors.New("vælg én kørselstilstand")
+	}
+	if *service {
+		return runWindowsService(*configPath, executable)
 	}
 	filename, err := resolveConfigPath(*configPath)
 	if err != nil {
@@ -191,24 +197,16 @@ func run() error {
 	if *gui {
 		return openDesktop(executable, filename)
 	}
-	appDir := filepath.Dir(filename)
+	if *installService {
+		return installWindowsService(filename, executable)
+	}
 	if *newCert {
+		appDir := filepath.Dir(filename)
 		if err := generateCertificate(appDir); err != nil {
 			return err
 		}
 		fmt.Printf("Upload %s til appregistreringen i Microsoft Entra.\n", filepath.Join(appDir, certName))
 		return nil
-	}
-	cfg, err := readConfig(filename)
-	if err == nil {
-		cfg, err = validateConfig(cfg, filename, executable)
-	}
-	if err != nil {
-		if logger, file, logErr := openArchiveLog(appDir, io.Discard); logErr == nil {
-			logger.Printf("Kørslen kunne ikke starte: %v", err)
-			file.Close()
-		}
-		return err
 	}
 	mode := runOnce
 	switch {
@@ -219,7 +217,28 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runArchive(ctx, cfg, appDir, mode, os.Stdout)
+	return runConfiguredArchive(ctx, filename, executable, mode, os.Stdout)
+}
+
+func loadArchiveConfig(filename, executable string) (config, error) {
+	cfg, err := readConfig(filename)
+	if err != nil {
+		return cfg, err
+	}
+	return validateConfig(cfg, filename, executable)
+}
+
+func runConfiguredArchive(ctx context.Context, filename, executable string, mode runMode, output io.Writer) error {
+	appDir := filepath.Dir(filename)
+	cfg, err := loadArchiveConfig(filename, executable)
+	if err != nil {
+		if logger, file, logErr := openArchiveLog(appDir, io.Discard); logErr == nil {
+			logger.Printf("Kørslen kunne ikke starte: %v", err)
+			file.Close()
+		}
+		return err
+	}
+	return runArchive(ctx, cfg, appDir, mode, output)
 }
 
 func openArchiveLog(appDir string, output io.Writer) (*log.Logger, *os.File, error) {

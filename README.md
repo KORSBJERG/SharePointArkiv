@@ -51,13 +51,49 @@ Invoke-MgGraphRequest -Method POST `
 
 ## 4. Følg loggen
 
-**Live log** viser de seneste linjer fra **arkiv.log** og opdaterer visningen automatisk. Her kan du se, hvornår en gennemgang starter, hvilke filer der kopieres eller slettes, og hvilke fejl der opstår. Visningen medtager også linjer fra Windows Opgavestyring, når den planlagte opgave bruger samme programmappe og indstillinger.
+**Live log** viser de seneste linjer fra **arkiv.log** og opdaterer visningen automatisk. Her kan du se, hvornår en gennemgang starter, hvilke filer der kopieres eller slettes, og hvilke fejl der opstår. Visningen medtager også linjer fra Windows-tjenesten eller en planlagt opgave med samme indstillinger og programmappe.
 
 Fjern fluebenet ved **Følg live** for at læse eller kopiere linjer i ro. Sæt fluebenet igen for at se de nyeste linjer. Klik **Åbn logfil** for at åbne hele loggen.
 
-## 5. Kør automatisk
+## 5. Kør som Windows-tjeneste
 
-Brug **Opgavestyring**, hvis overvågningen skal fortsætte, når vinduet er lukket. Gem først indstillingerne i appen.
+Tjenesten **PeakNet SharePoint Arkiv** starter automatisk efter Windows og kører med lukket appvindue. Den bruger den virtuelle Windows-konto `NT SERVICE\PeakNetSharePointArkiv`, som har sit eget sæt rettigheder og intet adgangskodefelt. [Microsofts beskrivelse af virtuelle tjenestekonti](https://learn.microsoft.com/windows/security/identity-protection/access-control/service-accounts)
+
+1. Placér appen i en dedikeret, adgangsbeskyttet mappe på en lokal NTFS-disk. Gem indstillingerne og test SharePoint-forbindelsen i appen. Stop en eventuel aktiv overvågning, og deaktivér en tidligere planlagt opgave til samme arkiv.
+2. Åbn PowerShell **som administrator** i programmappen, og installér tjenesten.
+
+```powershell
+$installer = Start-Process -FilePath (Resolve-Path '.\SharePoint-Arkiv.exe') -ArgumentList '-install-service' -NoNewWindow -Wait -PassThru
+if ($installer.ExitCode -ne 0) { throw 'Tjenesten kunne ikke installeres.' }
+```
+
+Installationen giver tjenestekontoen læseadgang til appens filer og skriveadgang til **arkiv.log** og **arkiv.korsel**. Behold de to filer i programmappen. Tjenesten står klar til første start, når kontoen har fået adgang til kildemappen.
+
+3. Giv tjenestekontoen læseadgang til den valgte kildemappe og filerne direkte i den. Tilpas stien nedenfor, og brug en fuld, lokal sti som `C:\Data\Arkiv`. Filer med særskilte adgangsregler skal have læseadgang særskilt.
+
+```powershell
+$kilde = 'C:\Data\Arkiv'
+icacls $kilde /grant 'NT SERVICE\PeakNetSharePointArkiv:(OI)(NP)(RX)'
+```
+
+Hvis lokal sletning er slået til, skal tjenestekontoen også have sletteadgang til de enkelte filer. Kommandoen nedenfor giver sletteadgang via arv på filer direkte i kildemappen. [Microsofts vejledning til icacls](https://learn.microsoft.com/windows-server/administration/windows-commands/icacls)
+
+```powershell
+icacls $kilde /grant 'NT SERVICE\PeakNetSharePointArkiv:(OI)(IO)(NP)(DE)'
+```
+
+4. Start tjenesten fra **Tjenester** i Windows eller fra administratorvinduet med kommandoerne nedenfor. Åbn appvinduet for at følge **Live log**.
+
+```powershell
+Start-Service PeakNetSharePointArkiv
+Get-Service PeakNetSharePointArkiv
+```
+
+Brug `Restart-Service PeakNetSharePointArkiv` efter ændringer i indstillingerne. Ved opgradering skal du stoppe tjenesten, erstatte programfilen på samme sti og starte tjenesten igen. Ved afinstallation kan du køre `Stop-Service PeakNetSharePointArkiv` efterfulgt af `sc.exe delete PeakNetSharePointArkiv`. Indstillinger og log ligger fortsat i programmappen.
+
+## 6. Brug Opgavestyring
+
+Du kan også køre arkivet med **Opgavestyring**. Gem først indstillingerne i appen.
 
 - Under **Generelt** vælg at køre, uanset om brugeren er logget på. Brug en konto med læseadgang til kilden, sletteadgang når oprydning er aktiv, læseadgang til certifikat og nøgle samt skriveadgang til loggen.
 - Under **Udløsere** vælg **Ved start**, så programmet starter igen efter en genstart af Windows.
