@@ -1,0 +1,11 @@
+{
+  "local_folder": "C:\\Data\\Eksport",
+  "site_url": "https://firma.sharepoint.com/sites/Drift",
+  "document_library": "Dokumenter",
+  "destination_folder": "Arkiv/Eksport",
+  "tenant_id": "00000000-0000-0000-0000-000000000000",
+  "client_id": "00000000-0000-0000-0000-000000000000",
+  "scan_interval_minutes": 5,
+  "minimum_file_age_seconds": 120,
+  "delete_local": false
+}

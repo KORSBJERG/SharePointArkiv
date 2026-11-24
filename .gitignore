@@ -1,0 +1,17 @@
+# Local settings, credentials and runtime files
+config*.json
+!config.example.json
+*.pem
+*.cer
+*.key
+*.pfx
+*.p12
+*.log
+*.korsel
+arkiv-indstillinger-*.tmp
+.env
+.env.*
+
+# Build and distribution artifacts
+*.exe
+*.zip
