@@ -36,24 +36,39 @@ const (
 	idStart
 	idLog
 	idHelp
+	idFollowLog
+	idLiveLog
 )
 
-type desktopEvent struct {
-	text     string
-	finished bool
-}
+const (
+	desktopWidth  = 800
+	desktopHeight = 800
+	brandHeight   = 80
+	logTimer      = 1
+	iconResource  = 2 // The resource compiler assigns ID 1 to the manifest.
+)
+
+var (
+	brandBackground = rgb(17, 26, 29)
+	brandForeground = rgb(240, 236, 230)
+	brandAccent     = rgb(146, 201, 193)
+)
 
 type desktop struct {
-	window, instance                         uintptr
-	font, heading, titleFont                 uintptr
-	ownFont, ownHeading, ownTitleFont        bool
-	dpi                                      int32
-	executable, filename                     string
-	controls                                 map[uintptr]uintptr
-	status                                   uintptr
-	events                                   chan desktopEvent
-	cancel                                   context.CancelFunc
-	closing, stopRequested, unreadableConfig bool
+	window, instance                              uintptr
+	font, heading, titleFont, logFont             uintptr
+	ownFont, ownHeading, ownTitleFont, ownLogFont bool
+	brandBrush, brandIcon                         uintptr
+	brandControls                                 map[uintptr]uintptr
+	dpi                                           int32
+	executable, filename                          string
+	controls                                      map[uintptr]uintptr
+	status, liveLog                               uintptr
+	logTail                                       logTail
+	lastLogView                                   string
+	done                                          chan string
+	cancel                                        context.CancelFunc
+	closing, stopRequested, unreadableConfig      bool
 }
 
 var currentDesktop *desktop
@@ -68,10 +83,13 @@ func openDesktop(executable, filename string) error {
 		defer coUninitialize.Call()
 	}
 
-	const className = "SharePointArkivDesktop"
+	const className = "PeakNetSharePointArkivDesktop"
 	instance, _, _ := getModuleHandle.Call(0)
 	cursor, _, _ := loadCursor.Call(0, 32512)
-	icon, _, _ := loadIcon.Call(0, 32512)
+	icon, _, _ := loadIcon.Call(instance, iconResource)
+	if icon == 0 {
+		icon, _, _ = loadIcon.Call(0, 32512)
+	}
 	class := windowClass{
 		size: uint32(unsafe.Sizeof(windowClass{})), windowProc: desktopCallback, instance: instance,
 		icon: icon, cursor: cursor, background: 6, name: wide(className), smallIcon: icon,
@@ -81,21 +99,29 @@ func openDesktop(executable, filename string) error {
 	}
 	const exStyle = wsExControlParent
 	const style = wsCaption | wsSysMenu | wsMinimizeBox
-	frame, dpi := centerWindow(800, 672, style, exStyle)
-	window, err := createDesktopWindow(instance, className, "SharePoint Arkiv", exStyle, style, frame, 0, 0)
+	frame, dpi := centerWindow(desktopWidth, desktopHeight, style, exStyle)
+	window, err := createDesktopWindow(instance, className, applicationName, exStyle, style, frame, 0, 0)
 	if err != nil {
 		return err
 	}
 	d := &desktop{
 		window: window, instance: instance, dpi: dpi, executable: executable, filename: filename,
-		controls: make(map[uintptr]uintptr), events: make(chan desktopEvent, 24),
+		controls: make(map[uintptr]uintptr), done: make(chan string, 1),
+		brandControls: make(map[uintptr]uintptr),
+		logTail:       logTail{path: filepath.Join(filepath.Dir(filename), archiveLogName)},
 	}
 	currentDesktop = d
 	defer func() { currentDesktop = nil }()
-	d.font, d.ownFont = newUIFont(int(d.scale(15)), 400)
-	d.heading, d.ownHeading = newUIFont(int(d.scale(17)), 600)
-	d.titleFont, d.ownTitleFont = newUIFont(int(d.scale(29)), 600)
-	defer d.freeFonts()
+	d.font, d.ownFont = newUIFont("Segoe UI", int(d.scale(15)), 400)
+	d.heading, d.ownHeading = newUIFont("Segoe UI", int(d.scale(17)), 600)
+	d.titleFont, d.ownTitleFont = newUIFont("Segoe UI", int(d.scale(26)), 600)
+	d.logFont, d.ownLogFont = newUIFont("Consolas", int(d.scale(14)), 400)
+	iconSize := uintptr(d.scale(32))
+	d.brandIcon, _, _ = loadImage.Call(instance, iconResource, 1, iconSize, iconSize, 0x8000)
+	if !highContrastEnabled() {
+		d.brandBrush, _, _ = createSolidBrush.Call(brandBackground)
+	}
+	defer d.freeGraphics()
 	if err := d.build(); err != nil {
 		destroyWindow.Call(window)
 		return err
@@ -107,6 +133,13 @@ func openDesktop(executable, filename string) error {
 	}
 	d.fill(cfg)
 	d.updateControls()
+	sendMessage.Call(d.controls[idFollowLog], bmSetCheck, 1, 0)
+	d.refreshLog()
+	if timer, _, err := startWindowTimer.Call(window, logTimer, 1000, 0); timer == 0 {
+		destroyWindow.Call(window)
+		return fmt.Errorf("start live log: %w", err)
+	}
+	defer stopWindowTimer.Call(window, logTimer)
 	if d.unreadableConfig {
 		d.show("De gemte indstillinger kunne ikke læses. " + err.Error())
 	} else if err != nil {
@@ -132,7 +165,13 @@ func openDesktop(executable, filename string) error {
 	}
 }
 
-func (d *desktop) freeFonts() {
+func (d *desktop) freeGraphics() {
+	if d.brandBrush != 0 {
+		deleteObject.Call(d.brandBrush)
+	}
+	if d.ownLogFont {
+		deleteObject.Call(d.logFont)
+	}
 	if d.ownTitleFont {
 		deleteObject.Call(d.titleFont)
 	}
@@ -154,8 +193,24 @@ func desktopProcedure(window, message, wParam, lParam uintptr) uintptr {
 			}
 			return 0
 		case wmAppWork:
-			d.readEvents()
+			select {
+			case text := <-d.done:
+				d.finishWork(text)
+			default:
+			}
 			return 0
+		case wmTimer:
+			if wParam == logTimer {
+				d.refreshLog()
+				return 0
+			}
+		case wmEraseBackground:
+			if d.brandBrush != 0 {
+				defaultWindowProc.Call(window, message, wParam, lParam)
+				band := rectangle{right: d.scale(desktopWidth), bottom: d.scale(brandHeight)}
+				fillRect.Call(wParam, uintptr(unsafe.Pointer(&band)), d.brandBrush)
+				return 1
+			}
 		case wmClose:
 			if d.cancel == nil {
 				destroyWindow.Call(window)
@@ -169,7 +224,14 @@ func desktopProcedure(window, message, wParam, lParam uintptr) uintptr {
 			}
 			return 0
 		case wmControlColorStatic, wmControlColorButton:
-			if lParam != d.status {
+			if d.brandBrush != 0 {
+				if foreground, ok := d.brandControls[lParam]; ok {
+					setTextColor.Call(wParam, foreground)
+					setBackgroundColor.Call(wParam, brandBackground)
+					return d.brandBrush
+				}
+			}
+			if lParam != d.status && lParam != d.liveLog {
 				return useWindowColors(wParam)
 			}
 		case wmDestroy:
@@ -224,8 +286,19 @@ func (d *desktop) build() error {
 		}
 	}
 
-	control(0, "STATIC", "SharePoint Arkiv", 0, 0, d.titleFont, 24, 16, 455, 39)
-	label("Kopiér lokale filer til SharePoint Online.", 24, 59, 480)
+	textX := int32(24)
+	if d.brandIcon != 0 {
+		mark := control(0, "STATIC", "", 0, ssIcon, d.font, 24, 24, 32, 32)
+		d.brandControls[mark] = brandForeground
+		sendMessage.Call(mark, stmSetIcon, d.brandIcon, 0)
+		textX = 72
+	}
+	brandLabel := control(0, "STATIC", "PeakNet", 0, 0, d.heading, textX, 12, 320, 24)
+	d.brandControls[brandLabel] = brandAccent
+	productLabel := control(0, "STATIC", "SharePoint Arkiv", 0, 0, d.titleFont, textX, 34, 470, 37)
+	d.brandControls[productLabel] = brandForeground
+	address := control(0, "STATIC", "peaknet.dk", 0, ssRight, d.font, 648, 33, 128, 23)
+	d.brandControls[address] = brandAccent
 
 	heading("Mapper", 24, 95, 350)
 	edit(idSource, "Lokal kildemappe", "", 24, 129, 260, false)
@@ -251,12 +324,18 @@ func (d *desktop) build() error {
 	button(idCheck, "Test forbindelse", 172, 492, 132)
 	button(idTry, "Prøvekør kopiering", 312, 492, 143)
 	button(idStart, "Start overvågning", 602, 492, 174)
-	label("Status", 24, 545, 120)
 	d.status = control(0, "EDIT", "", wsExClientEdge,
-		wsTabStop|wsVScroll|esReadOnly|esMultiline|esAutoVScroll, d.font, 24, 568, 752, 46)
-	label("Overvågningen stopper, når vinduet lukkes.", 24, 624, 478)
-	button(idHelp, "Vejledning", 568, 620, 101)
-	button(idLog, "Åbn log", 677, 620, 99)
+		wsTabStop|esReadOnly|esMultiline, d.font, 24, 532, 752, 38)
+
+	heading("Live log", 24, 585, 208)
+	control(idFollowLog, "BUTTON", "Følg live", 0, wsTabStop|bsAutoCheckBox, d.font, 675, 582, 101, 28)
+	d.liveLog = control(idLiveLog, "EDIT", "", wsExClientEdge,
+		wsTabStop|wsVScroll|esReadOnly|esMultiline|esAutoVScroll, d.logFont, 24, 613, 752, 131)
+	sendMessage.Call(d.liveLog, emSetLimitText, logViewBytes*2, 0)
+
+	label("Overvågningen i appen stopper, når vinduet lukkes.", 24, 763, 478)
+	button(idHelp, "Vejledning", 535, 754, 108)
+	button(idLog, "Åbn logfil", 651, 754, 125)
 	return firstError
 }
 
@@ -310,9 +389,11 @@ func (d *desktop) command(id uintptr) {
 	case idHelp:
 		d.openInNotepad(filepath.Join(filepath.Dir(d.executable), "README.md"))
 	case idLog:
-		d.openInNotepad(filepath.Join(dir, "arkiv.log"))
+		d.openInNotepad(d.logTail.path)
+	case idFollowLog:
+		d.refreshLog()
 	case idCertificate:
-		d.perform("Opretter certifikat …", func(_ context.Context, _ io.Writer) (string, error) {
+		d.perform("Opretter certifikat …", func(_ context.Context) (string, error) {
 			err := generateCertificate(dir)
 			return "Certifikatet er oprettet. Brug Vis certifikat, og upload klient.cer til appregistreringen i Microsoft Entra.", err
 		})
@@ -330,16 +411,16 @@ func (d *desktop) command(id uintptr) {
 		case idSave:
 			d.save(cfg)
 		case idCheck:
-			d.run(cfg, runCheck, "Tester forbindelse …", "")
+			d.run(cfg, runCheck, "Tester forbindelse …", "Forbindelsen virker. Se destinationen i loggen.")
 		case idTry:
 			cfg.DeleteLocal = false
-			d.run(cfg, runOnce, "Prøvekører kopiering til SharePoint …", "Prøvekørsel færdig. Se arkiv.log for detaljer.")
+			d.run(cfg, runOnce, "Prøvekører kopiering til SharePoint …", "Prøvekørsel færdig.")
 		case idStart:
 			if cfg.DeleteLocal && !confirm(d.window, "Start overvågning med lokal sletning? Filer, der er mere end 30 døgn gamle, kan slettes permanent efter kontrol af SharePoint-kopien.") {
 				return
 			}
 			if d.save(cfg) {
-				d.run(cfg, runWatch, "Starter overvågning …", "")
+				d.run(cfg, runWatch, "Overvågning kører.", "")
 			}
 		}
 	}
@@ -396,13 +477,13 @@ func (d *desktop) updateControls() {
 }
 
 func (d *desktop) run(cfg config, mode runMode, working, done string) {
-	d.perform(working, func(ctx context.Context, output io.Writer) (string, error) {
-		err := runArchive(ctx, cfg, filepath.Dir(d.filename), mode, output)
+	d.perform(working, func(ctx context.Context) (string, error) {
+		err := runArchive(ctx, cfg, filepath.Dir(d.filename), mode, io.Discard)
 		return done, err
 	})
 }
 
-func (d *desktop) perform(working string, action func(context.Context, io.Writer) (string, error)) {
+func (d *desktop) perform(working string, action func(context.Context) (string, error)) {
 	if d.cancel != nil {
 		return
 	}
@@ -411,15 +492,14 @@ func (d *desktop) perform(working string, action func(context.Context, io.Writer
 	d.updateControls()
 	d.show(working)
 	go func() {
-		output := desktopLog{window: d.window, events: d.events}
-		text, err := action(ctx, output)
+		text, err := action(ctx)
 		switch {
 		case ctx.Err() != nil:
 			text = "Kørslen er stoppet."
 		case err != nil:
 			text = "Fejl. " + err.Error()
 		}
-		d.events <- desktopEvent{text: text, finished: true}
+		d.done <- text
 		postMessage.Call(d.window, wmAppWork, 0, 0)
 	}()
 }
@@ -431,41 +511,42 @@ func (d *desktop) stop() {
 	d.show("Stopper den aktive kørsel …")
 }
 
-func (d *desktop) readEvents() {
-	for {
-		select {
-		case event := <-d.events:
-			if event.finished {
-				d.cancel()
-				d.cancel = nil
-				d.stopRequested = false
-				d.updateControls()
-				if d.closing {
-					destroyWindow.Call(d.window)
-					return
-				}
-				if event.text != "" {
-					d.show(event.text)
-				}
-			} else if !d.stopRequested {
-				d.show(event.text)
-			}
-		default:
-			return
-		}
+func (d *desktop) finishWork(text string) {
+	d.cancel()
+	d.cancel = nil
+	d.stopRequested = false
+	d.updateControls()
+	if d.closing {
+		destroyWindow.Call(d.window)
+		return
 	}
+	if text != "" {
+		d.show(text)
+	}
+	d.refreshLog()
 }
 
-type desktopLog struct {
-	window uintptr
-	events chan<- desktopEvent
-}
-
-func (log desktopLog) Write(data []byte) (int, error) {
-	select {
-	case log.events <- desktopEvent{text: strings.TrimSpace(string(data))}:
-		postMessage.Call(log.window, wmAppWork, 0, 0)
-	default:
+func (d *desktop) refreshLog() {
+	if checked, _, _ := sendMessage.Call(d.controls[idFollowLog], bmGetCheck, 0, 0); checked != 1 {
+		return
 	}
-	return len(data), nil
+	text, changed, err := d.logTail.read()
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		text = "Loggen vises her, når en kørsel starter."
+	case err != nil:
+		text = "Loggen kunne ikke læses. " + err.Error()
+	case !changed:
+		return
+	case text == "":
+		text = "Loggen indeholder endnu ingen linjer."
+	}
+	if text == d.lastLogView {
+		return
+	}
+	d.lastLogView = text
+	text = strings.ReplaceAll(strings.ReplaceAll(text, "\r\n", "\n"), "\n", "\r\n")
+	setText(d.liveLog, text)
+	sendMessage.Call(d.liveLog, emSetSelection, 0x7fffffff, 0x7fffffff)
+	sendMessage.Call(d.liveLog, emScrollCaret, 0, 0)
 }

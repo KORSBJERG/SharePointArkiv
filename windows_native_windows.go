@@ -35,15 +35,21 @@ var (
 	setFocus             = user32.NewProc("SetFocus")
 	loadCursor           = user32.NewProc("LoadCursorW")
 	loadIcon             = user32.NewProc("LoadIconW")
+	loadImage            = user32.NewProc("LoadImageW")
 	messageBox           = user32.NewProc("MessageBoxW")
 	adjustWindowRect     = user32.NewProc("AdjustWindowRectEx")
 	systemParametersInfo = user32.NewProc("SystemParametersInfoW")
 	setProcessDPIAware   = user32.NewProc("SetProcessDPIAware")
 	getDpiForSystem      = user32.NewProc("GetDpiForSystem")
+	startWindowTimer     = user32.NewProc("SetTimer")
+	stopWindowTimer      = user32.NewProc("KillTimer")
+	fillRect             = user32.NewProc("FillRect")
 
 	getSysColor        = user32.NewProc("GetSysColor")
 	getSysColorBrush   = user32.NewProc("GetSysColorBrush")
 	setBackgroundColor = gdi32.NewProc("SetBkColor")
+	setTextColor       = gdi32.NewProc("SetTextColor")
+	createSolidBrush   = gdi32.NewProc("CreateSolidBrush")
 
 	getModuleHandle = kernel32.NewProc("GetModuleHandleW")
 	attachConsole   = kernel32.NewProc("AttachConsole")
@@ -71,16 +77,23 @@ const (
 	wsExClientEdge    = 0x00000200
 	wsExControlParent = 0x00010000
 
-	wmClose   = 0x0010
-	wmDestroy = 0x0002
-	wmCommand = 0x0111
-	wmSetFont = 0x0030
-	wmAppWork = 0x8001
+	wmClose           = 0x0010
+	wmDestroy         = 0x0002
+	wmCommand         = 0x0111
+	wmSetFont         = 0x0030
+	wmAppWork         = 0x8001
+	wmTimer           = 0x0113
+	wmEraseBackground = 0x0014
 
 	wmControlColorButton = 0x0135
 	wmControlColorStatic = 0x0138
 
 	emSetLimitText = 0x00c5
+	emSetSelection = 0x00b1
+	emScrollCaret  = 0x00b7
+	stmSetIcon     = 0x0170
+	ssIcon         = 0x0003
+	ssRight        = 0x0002
 	emSetCueBanner = 0x1501
 	bmGetCheck     = 0x00f0
 	bmSetCheck     = 0x00f1
@@ -158,20 +171,34 @@ func useWindowColors(deviceContext uintptr) uintptr {
 	return brush
 }
 
+func rgb(red, green, blue uintptr) uintptr {
+	return red | green<<8 | blue<<16
+}
+
+func highContrastEnabled() bool {
+	var mode struct {
+		size, flags uint32
+		scheme      *uint16
+	}
+	mode.size = uint32(unsafe.Sizeof(mode))
+	ok, _, _ := systemParametersInfo.Call(0x0042, uintptr(mode.size), uintptr(unsafe.Pointer(&mode)), 0)
+	return ok != 0 && mode.flags&1 != 0
+}
+
 func showDesktopError(err error) {
 	messageBox.Call(0, uintptr(unsafe.Pointer(wide(err.Error()))),
-		uintptr(unsafe.Pointer(wide("SharePoint Arkiv"))), 0x10)
+		uintptr(unsafe.Pointer(wide(applicationName))), 0x10)
 }
 
 func confirm(parent uintptr, text string) bool {
-	id, _, _ := messageBox.Call(parent, uintptr(unsafe.Pointer(wide(text))), uintptr(unsafe.Pointer(wide("SharePoint Arkiv"))),
+	id, _, _ := messageBox.Call(parent, uintptr(unsafe.Pointer(wide(text))), uintptr(unsafe.Pointer(wide(applicationName))),
 		0x00000004|0x00000030|0x00000100)
 	return id == 6
 }
 
-func newUIFont(size, weight int) (uintptr, bool) {
+func newUIFont(face string, size, weight int) (uintptr, bool) {
 	font, _, _ := createFont.Call(uintptr(-size), 0, 0, 0, uintptr(weight), 0, 0, 0, 1, 0, 0, 5, 0,
-		uintptr(unsafe.Pointer(wide("Segoe UI"))))
+		uintptr(unsafe.Pointer(wide(face))))
 	if font != 0 {
 		return font, true
 	}

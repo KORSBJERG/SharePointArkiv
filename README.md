@@ -1,4 +1,4 @@
-# SharePoint Arkiv
+# PeakNet SharePoint Arkiv
 
 Et baggrundsprogram til Windows (x64), der kopierer filer fra en lokal mappe til en mappe i SharePoint Online. Programmet behandler også filer, der allerede ligger i kildemappen. Det venter som standard to minutter efter en fils seneste ændring, så filer i brug får tid til at blive skrevet færdige.
 
@@ -31,7 +31,7 @@ $site = Invoke-MgGraphRequest -Method GET -Uri "https://graph.microsoft.com/v1.0
 $permission = @{
     roles = @('write')
     grantedToIdentities = @(
-        @{ application = @{ id = $clientId; displayName = 'SharePoint Arkiv' } }
+        @{ application = @{ id = $clientId; displayName = 'PeakNet SharePoint Arkiv' } }
     )
 }
 Invoke-MgGraphRequest -Method POST `
@@ -45,18 +45,24 @@ Invoke-MgGraphRequest -Method POST `
 ## 3. Gem, test og start
 
 1. Indtast **Lejer-id** og **Program-id** fra appregistreringen, og klik **Gem indstillinger**.
-2. Klik **Test forbindelse**. Statusfeltet viser, hvilken SharePoint-mappe appen kan læse. Brug **Biblioteks-id** med bibliotekets Graph-id, hvis opslag på visningsnavnet fejler. En administrator med læseadgang kan finde id'et med `GET /sites/{site-id}/drives`. [Microsofts vejledning til biblioteksopslag](https://learn.microsoft.com/en-us/graph/api/drive-list?view=graph-rest-1.0)
-3. Klik **Prøvekør kopiering** for at overføre filer uden lokal sletning. Knappen **Åbn log** viser resultatet i **arkiv.log**.
+2. Klik **Test forbindelse**. Loggen viser, hvilken SharePoint-mappe appen kan læse. Brug **Biblioteks-id** med bibliotekets Graph-id, hvis opslag på visningsnavnet fejler. En administrator med læseadgang kan finde id'et med `GET /sites/{site-id}/drives`. [Microsofts vejledning til biblioteksopslag](https://learn.microsoft.com/en-us/graph/api/drive-list?view=graph-rest-1.0)
+3. Klik **Prøvekør kopiering** for at overføre filer uden lokal sletning. Se resultatet i **Live log** nederst i vinduet.
 4. Sæt flueben ved **Slet verificerede lokale filer efter 30 døgn**, hvis oprydningen skal være aktiv. Klik **Start overvågning**. Appen gemmer indstillingerne og tjekker som standard kilden hvert femte minut, så længe vinduet er åbent. Klik **Stop** for at afbryde overvågningen.
 
-## 4. Kør automatisk
+## 4. Følg loggen
+
+**Live log** viser de seneste linjer fra **arkiv.log** og opdaterer visningen automatisk. Her kan du se, hvornår en gennemgang starter, hvilke filer der kopieres eller slettes, og hvilke fejl der opstår. Visningen medtager også linjer fra Windows Opgavestyring, når den planlagte opgave bruger samme programmappe og indstillinger.
+
+Fjern fluebenet ved **Følg live** for at læse eller kopiere linjer i ro. Sæt fluebenet igen for at se de nyeste linjer. Klik **Åbn logfil** for at åbne hele loggen.
+
+## 5. Kør automatisk
 
 Brug **Opgavestyring**, hvis overvågningen skal fortsætte, når vinduet er lukket. Gem først indstillingerne i appen.
 
 - Under **Generelt** vælg at køre, uanset om brugeren er logget på. Brug en konto med læseadgang til kilden, sletteadgang når oprydning er aktiv, læseadgang til certifikat og nøgle samt skriveadgang til loggen.
 - Under **Udløsere** vælg **Ved start**, så programmet starter igen efter en genstart af Windows.
 - Under **Handlinger** angiv den fulde sti til **SharePoint-Arkiv.exe**, og skriv `-watch` i argumentfeltet.
-- Under **Indstillinger** fjern den automatiske tidsgrænse, og vælg at springe en ny kørsel over, hvis opgaven allerede kører. Vælg at genstarte opgaven ved fejl. Kør opgaven manuelt første gang, og kontrollér **arkiv.log**.
+- Under **Indstillinger** fjern den automatiske tidsgrænse, og vælg at springe en ny kørsel over, hvis opgaven allerede kører. Vælg at genstarte opgaven ved fejl. Kør opgaven manuelt første gang, og kontrollér **Live log** eller **arkiv.log**.
 
 Genstart den planlagte opgave efter ændringer i appen. Til en enkelt kørsel fra kommandolinjen bruges argumentet `-once`.
 
@@ -64,5 +70,6 @@ Genstart den planlagte opgave efter ændringer i appen. Til en enkelt kørsel fr
 
 ```powershell
 go test ./...
+go run github.com/akavel/rsrc@v0.10.2 -manifest app.manifest -ico peaknet.ico -arch amd64 -o app_windows_amd64.syso
 go build -buildvcs=false -trimpath -ldflags="-H windowsgui" -o SharePoint-Arkiv.exe .
 ```

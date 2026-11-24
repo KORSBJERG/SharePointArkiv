@@ -44,7 +44,7 @@ func (a *archiver) scan(ctx context.Context, now time.Time) error {
 		return fmt.Errorf("læs kildemappen: %w", err)
 	}
 	next := make(map[string]archiveStamp)
-	var checked, failed int
+	var checked, waiting, failed int
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -55,7 +55,11 @@ func (a *archiver) scan(ctx context.Context, now time.Time) error {
 		name := entry.Name()
 		info, err := entry.Info()
 		if err == nil {
-			if !info.Mode().IsRegular() || now.Sub(info.ModTime()) < time.Duration(a.cfg.MinimumFileAgeSeconds)*time.Second {
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			if now.Sub(info.ModTime()) < time.Duration(a.cfg.MinimumFileAgeSeconds)*time.Second {
+				waiting++
 				continue
 			}
 			checked++
@@ -75,7 +79,7 @@ func (a *archiver) scan(ctx context.Context, now time.Time) error {
 		}
 	}
 	a.verified = next
-	a.logger.Printf("Gennemgang færdig. Filer behandlet: %d. Fejl: %d.", checked, failed)
+	a.logger.Printf("Gennemgang færdig. Behandlede filer: %d. Afventer: %d. Fejl: %d.", checked, waiting, failed)
 	if failed != 0 {
 		return fmt.Errorf("%d filer kunne ikke behandles. Se arkiv.log", failed)
 	}
@@ -102,6 +106,7 @@ func (a *archiver) processFile(ctx context.Context, path string, info os.FileInf
 
 	item, err := a.remote.lookup(ctx, name)
 	if hasStatus(err, http.StatusNotFound) {
+		a.logger.Printf("Kopierer til SharePoint: %q (%d byte)", name, info.Size())
 		item, err = a.remote.upload(ctx, name, file, info.Size())
 		switch {
 		case err == nil:
@@ -130,6 +135,7 @@ func (a *archiver) processFile(ctx context.Context, path string, info os.FileInf
 	if !deleteLocal && a.verified[name] == stamp {
 		return stamp, nil
 	}
+	a.logger.Printf("Kontrollerer SharePoint-kopi: %q", name)
 	if err := a.verify(ctx, file, info, item); err != nil {
 		return archiveStamp{}, err
 	}

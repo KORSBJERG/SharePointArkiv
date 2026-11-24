@@ -46,7 +46,7 @@ func generateCertificate(dir string) error {
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber:          serial,
-		Subject:               pkix.Name{CommonName: "SharePoint Arkiv"},
+		Subject:               pkix.Name{CommonName: applicationName},
 		NotBefore:             now.Add(-5 * time.Minute),
 		NotAfter:              now.AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature,

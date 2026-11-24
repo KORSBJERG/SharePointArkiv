@@ -18,6 +18,8 @@ import (
 	"time"
 )
 
+const applicationName = "PeakNet SharePoint Arkiv"
+
 type config struct {
 	LocalFolder           string `json:"local_folder"`
 	SiteURL               string `json:"site_url"`
@@ -198,11 +200,14 @@ func run() error {
 		return nil
 	}
 	cfg, err := readConfig(filename)
-	if err != nil {
-		return err
+	if err == nil {
+		cfg, err = validateConfig(cfg, filename, executable)
 	}
-	cfg, err = validateConfig(cfg, filename, executable)
 	if err != nil {
+		if logger, file, logErr := openArchiveLog(appDir, io.Discard); logErr == nil {
+			logger.Printf("Kørslen kunne ikke starte: %v", err)
+			file.Close()
+		}
 		return err
 	}
 	mode := runOnce
@@ -217,20 +222,35 @@ func run() error {
 	return runArchive(ctx, cfg, appDir, mode, os.Stdout)
 }
 
+func openArchiveLog(appDir string, output io.Writer) (*log.Logger, *os.File, error) {
+	file, err := os.OpenFile(filepath.Join(appDir, archiveLogName), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("åbn %s: %w", archiveLogName, err)
+	}
+	return log.New(io.MultiWriter(file, output), "", log.Ldate|log.Ltime), file, nil
+}
+
 func runArchive(ctx context.Context, cfg config, appDir string, mode runMode, output io.Writer) error {
+	logger, logFile, err := openArchiveLog(appDir, output)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
 	if mode != runCheck {
 		release, err := archiveRunLock(appDir)
 		if err != nil {
+			logger.Print(err)
 			return err
 		}
 		defer release()
 	}
-	logFile, err := os.OpenFile(filepath.Join(appDir, "arkiv.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-	if err != nil {
-		return fmt.Errorf("åbn arkiv.log: %w", err)
+	switch mode {
+	case runCheck:
+		logger.Print("Tester forbindelsen til SharePoint.")
+	case runWatch:
+		logger.Printf("Overvågning startet. Interval: %d min.", cfg.IntervalMinutes)
+		defer logger.Print("Overvågning afsluttet.")
 	}
-	defer logFile.Close()
-	logger := log.New(io.MultiWriter(logFile, output), "", log.Ldate|log.Ltime)
 	credential, err := loadCredential(cfg, appDir)
 	if err != nil {
 		logger.Print(err)
@@ -253,9 +273,17 @@ func runArchive(ctx context.Context, cfg config, appDir string, mode runMode, ou
 	var archive archiver
 	archive.cfg = cfg
 	archive.logger = logger
-	logger.Printf("Kilde: %s. Lokal sletning: %t.", cfg.LocalFolder, cfg.DeleteLocal)
+	cleanup := "fra"
+	if cfg.DeleteLocal {
+		cleanup = "til"
+	}
+	logger.Printf("Kilde: %s. Lokal sletning: %s.", cfg.LocalFolder, cleanup)
 	var lastDestination string
 	for {
+		if ctx.Err() != nil {
+			break
+		}
+		logger.Print("Starter gennemgang. Finder destinationen i SharePoint.")
 		folder, err := graph.findFolder(ctx, cfg)
 		if err == nil {
 			archive.remote = folder
@@ -274,6 +302,10 @@ func runArchive(ctx context.Context, cfg config, appDir string, mode runMode, ou
 		if mode != runWatch {
 			return ctx.Err()
 		}
+		if ctx.Err() != nil {
+			break
+		}
+		logger.Printf("Næste gennemgang om %d min.", cfg.IntervalMinutes)
 		timer := time.NewTimer(time.Duration(cfg.IntervalMinutes) * time.Minute)
 		select {
 		case <-ctx.Done():
@@ -282,4 +314,8 @@ func runArchive(ctx context.Context, cfg config, appDir string, mode runMode, ou
 		case <-timer.C:
 		}
 	}
+	if mode == runWatch {
+		return nil
+	}
+	return ctx.Err()
 }
