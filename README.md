@@ -7,12 +7,24 @@ Når lokal sletning er slået til, slettes en fil permanent, hvis dens seneste �
 ## 1. Åbn appen
 
 1. Pak ZIP-filen ud i en skrivbar mappe uden for kildemappen. Brug en mappe, hvor kun administratorer og den konto, der kører appen, har adgang.
-2. Dobbeltklik på **SharePoint-Arkiv.exe**. Brug **Gennemse** til at vælge den lokale kildemappe. Indtast SharePoint-webstedets adresse, dokumentbibliotekets visningsnavn og mappens sti i biblioteket, fx `Arkiv/Eksport`. Et tomt mappefelt vælger bibliotekets rod.
-3. Klik **Opret certifikat**. Knappen **Vis certifikat** finder den offentlige fil **klient.cer**. Den private nøgle bliver i programmappen. Certifikatet er gyldigt i ét år.
+2. Dobbeltklik på **SharePoint-Arkiv.exe**, og brug **Gennemse** til at vælge den lokale kildemappe.
 
 Ved opgradering kan du stoppe en eventuel aktiv kørsel og erstatte programfilen i den gamle programmappe. Vinduet indlæser eksisterende indstillinger og bruger det eksisterende certifikat.
 
-## 2. Giv programmet adgang til SharePoint
+## 2. Tilslut SharePoint
+
+1. Åbn destinationsmappen i SharePoint, og kopiér adressen fra browserens adresselinje.
+2. Indsæt adressen i **SharePoint-websted eller mappelink**, og klik **Tilslut SharePoint…**. Bekræft det valgte websted i vinduet.
+3. Log ind på Microsofts loginvindue med en arbejdskonto, som kan oprette Entra-apps, godkende Microsoft Graph-programrettigheder og administrere det valgte SharePoint-websted. Brug **Privileged Role Administrator** eller **Global Administrator** til godkendelsen af Microsoft Graph-programrettigheden og sørg for adgang til webstedet. Første gang kan Windows hente Microsofts Graph PowerShell-modul til din Windows-bruger, og Microsoft kan bede om samtykke til modulets rettigheder. [Godkendelse af Graph-programrettigheder](https://learn.microsoft.com/en-us/graph/api/serviceprincipal-post-approleassignments?view=graph-rest-1.0)
+4. Følg **Live log**. Guiden finder dokumentbiblioteket og mappen, opretter et lokalt certifikat efter behov og gemmer indstillingerne, når den har bekræftet forbindelsen med arkivappens certifikat. Vælg derefter **Prøvekør kopiering** eller **Start overvågning**.
+
+Guiden bruger en Microsoft Graph PowerShell-session til selve opsætningen. Arkivappen får programrettigheden `Sites.Selected` og rollen **write** på det valgte websted. Den daglige kørsel og Windows-tjenesten bruger certifikatet, så administratorlogin kun bruges under opsætningen. Indstillingerne kan genindlæses i tjenesten med `Restart-Service PeakNetSharePointArkiv`. [Microsoft om Sites.Selected](https://learn.microsoft.com/en-us/graph/permissions-selected-overview)
+
+Hvis du er administrator i en anden organisation, kan du indtaste dens **Lejer-id** før login. Stop en eventuel aktiv overvågning eller Windows-tjeneste, før du ændrer forbindelsen. Hvis et kopieret delingslink afvises, så åbn mappen og brug browserens adresselinje.
+
+### Manuel opsætning
+
+Brug de manuelle felter, hvis organisationens politik kræver særskilt godkendelse. Klik **Opret certifikat**, og brug **Vis certifikat** til at finde den offentlige fil **klient.cer**. Den private nøgle bliver i programmappen. Indtast SharePoint-webstedets adresse, dokumentbibliotekets visningsnavn og mappens sti i biblioteket. Et tomt mappefelt vælger bibliotekets rod.
 
 1. Opret en **single-tenant** appregistrering i Microsoft Entra. Gem **Directory (tenant) ID** og **Application (client) ID**.
 2. Upload **klient.cer** under **Certificates & secrets → Certificates**.
@@ -44,7 +56,7 @@ Invoke-MgGraphRequest -Method POST `
 
 ## 3. Gem, test og start
 
-1. Indtast **Lejer-id** og **Program-id** fra appregistreringen, og klik **Gem indstillinger**.
+1. Ved manuel opsætning indtaster du **Lejer-id** og **Program-id** fra appregistreringen og klikker **Gem indstillinger**.
 2. Klik **Test forbindelse**. Loggen viser, hvilken SharePoint-mappe appen kan læse. Brug **Biblioteks-id** med bibliotekets Graph-id, hvis opslag på visningsnavnet fejler. En administrator med læseadgang kan finde id'et med `GET /sites/{site-id}/drives`. [Microsofts vejledning til biblioteksopslag](https://learn.microsoft.com/en-us/graph/api/drive-list?view=graph-rest-1.0)
 3. Klik **Prøvekør kopiering** for at overføre filer uden lokal sletning. Se resultatet i **Live log** nederst i vinduet.
 4. Sæt flueben ved **Slet verificerede lokale filer efter 30 døgn**, hvis oprydningen skal være aktiv. Klik **Start overvågning**. Appen gemmer indstillingerne og tjekker som standard kilden hvert femte minut, så længe vinduet er åbent. Klik **Stop** for at afbryde overvågningen.

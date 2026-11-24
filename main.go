@@ -90,7 +90,7 @@ func resolveConfigPath(path string) (string, error) {
 	return filepath.Join(dir, filepath.Base(filename)), nil
 }
 
-func validateConfig(cfg config, filename, executable string) (config, error) {
+func validateLocalConfig(cfg config, filename, executable string) (config, error) {
 	if !filepath.IsAbs(cfg.LocalFolder) {
 		return cfg, errors.New("Vælg en lokal kildemappe med en fuld sti.")
 	}
@@ -115,6 +115,18 @@ func validateConfig(cfg config, filename, executable string) (config, error) {
 			return cfg, errors.New("programmet, indstillingerne og den private nøgle skal ligge uden for kildemappen")
 		}
 	}
+	if cfg.IntervalMinutes < 1 || cfg.IntervalMinutes > 1440 ||
+		cfg.MinimumFileAgeSeconds < 0 || cfg.MinimumFileAgeSeconds > 86400 {
+		return cfg, errors.New("Brug 1–1440 minutter for intervallet og 0–86400 sekunder for ventetiden.")
+	}
+	return cfg, nil
+}
+
+func validateConfig(cfg config, filename, executable string) (config, error) {
+	cfg, err := validateLocalConfig(cfg, filename, executable)
+	if err != nil {
+		return cfg, err
+	}
 	site, err := url.Parse(cfg.SiteURL)
 	if err != nil || site.Scheme != "https" || site.Host != site.Hostname() ||
 		!strings.HasSuffix(strings.ToLower(site.Host), ".sharepoint.com") ||
@@ -134,10 +146,6 @@ func validateConfig(cfg config, filename, executable string) (config, error) {
 	}
 	if !uuidPattern.MatchString(cfg.TenantID) || !uuidPattern.MatchString(cfg.ClientID) {
 		return cfg, errors.New("Indtast lejer-id og program-id fra appregistreringen i Microsoft Entra.")
-	}
-	if cfg.IntervalMinutes < 1 || cfg.IntervalMinutes > 1440 ||
-		cfg.MinimumFileAgeSeconds < 0 || cfg.MinimumFileAgeSeconds > 86400 {
-		return cfg, errors.New("Brug 1–1440 minutter for intervallet og 0–86400 sekunder for ventetiden.")
 	}
 	return cfg, nil
 }

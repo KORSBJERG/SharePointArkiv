@@ -86,14 +86,7 @@ func (g *graph) findFolder(ctx context.Context, cfg config) (*graphFolder, error
 	}
 
 	driveURL := graphBase + "/drives/" + url.PathEscape(driveID)
-	folderURL := driveURL + "/root"
-	if cfg.DestinationFolder != "" {
-		parts := strings.Split(cfg.DestinationFolder, "/")
-		for i, part := range parts {
-			parts[i] = url.PathEscape(part)
-		}
-		folderURL += ":/" + strings.Join(parts, "/")
-	}
+	folderURL := graphBase + driveRootPath(driveID, cfg.DestinationFolder)
 	var item driveItem
 	if err := g.json(ctx, http.MethodGet, folderURL+"?$select=id,folder,webUrl", nil, &item); err != nil {
 		return nil, fmt.Errorf("find destinationsmappen %q: %w", cfg.DestinationFolder, err)
@@ -116,17 +109,33 @@ func (g *graph) findFolder(ctx context.Context, cfg config) (*graphFolder, error
 	}, nil
 }
 
+func graphSitePath(site *url.URL) string {
+	path := strings.TrimRight(site.EscapedPath(), "/")
+	if path == "" {
+		path = "/"
+	}
+	return "/sites/" + site.Hostname() + ":" + path
+}
+
+func driveRootPath(driveID, folder string) string {
+	root := "/drives/" + url.PathEscape(driveID) + "/root"
+	if folder == "" {
+		return root
+	}
+	parts := strings.Split(folder, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return root + ":/" + strings.Join(parts, "/")
+}
+
 func (g *graph) findDriveID(ctx context.Context, cfg config) (string, error) {
 	siteURL, err := url.Parse(cfg.SiteURL)
 	if err != nil {
 		return "", err
 	}
-	sitePath := strings.TrimRight(siteURL.EscapedPath(), "/")
-	if sitePath == "" {
-		sitePath = "/"
-	}
 	var site struct{ ID string }
-	if err := g.json(ctx, http.MethodGet, graphBase+"/sites/"+siteURL.Hostname()+":"+sitePath+"?$select=id", nil, &site); err != nil {
+	if err := g.json(ctx, http.MethodGet, graphBase+graphSitePath(siteURL)+"?$select=id", nil, &site); err != nil {
 		return "", fmt.Errorf("find websted: %w", err)
 	}
 	if site.ID == "" {

@@ -38,6 +38,7 @@ const (
 	idHelp
 	idFollowLog
 	idLiveLog
+	idAutoSetup
 )
 
 const (
@@ -54,6 +55,11 @@ var (
 	brandAccent     = rgb(146, 201, 193)
 )
 
+type desktopResult struct {
+	text string
+	ok   bool
+}
+
 type desktop struct {
 	window, instance                              uintptr
 	font, heading, titleFont, logFont             uintptr
@@ -66,9 +72,10 @@ type desktop struct {
 	status, liveLog                               uintptr
 	logTail                                       logTail
 	lastLogView                                   string
-	done                                          chan string
+	done                                          chan desktopResult
 	cancel                                        context.CancelFunc
 	closing, stopRequested, unreadableConfig      bool
+	reloadAfterSetup                              bool
 }
 
 var currentDesktop *desktop
@@ -106,7 +113,7 @@ func openDesktop(executable, filename string) error {
 	}
 	d := &desktop{
 		window: window, instance: instance, dpi: dpi, executable: executable, filename: filename,
-		controls: make(map[uintptr]uintptr), done: make(chan string, 1),
+		controls: make(map[uintptr]uintptr), done: make(chan desktopResult, 1),
 		brandControls: make(map[uintptr]uintptr),
 		logTail:       logTail{path: filepath.Join(filepath.Dir(filename), archiveLogName)},
 	}
@@ -143,7 +150,7 @@ func openDesktop(executable, filename string) error {
 	if d.unreadableConfig {
 		d.show("De gemte indstillinger kunne ikke læses. " + err.Error())
 	} else if err != nil {
-		d.show("Vælg mapperne, og udfyld oplysningerne fra Microsoft Entra.")
+		d.show("Vælg kildemappen, indsæt SharePoint-mappelinket, og vælg Tilslut SharePoint.")
 	} else {
 		d.show("Indstillingerne er indlæst. Du kan teste forbindelsen eller starte overvågning.")
 	}
@@ -303,11 +310,12 @@ func (d *desktop) build() error {
 	heading("Mapper", 24, 95, 350)
 	edit(idSource, "Lokal kildemappe", "", 24, 129, 260, false)
 	button(idBrowse, "Gennemse…", 292, 150, 99)
-	edit(idSite, "SharePoint-websted", "https://firma.sharepoint.com/sites/Drift", 24, 187, 367, false)
+	edit(idSite, "SharePoint-websted eller mappelink", "Indsæt adressen til mappen fra SharePoint", 24, 187, 367, false)
 	edit(idLibrary, "Dokumentbibliotek", "Fx Dokumenter", 24, 245, 367, false)
 	edit(idFolder, "Mappe i biblioteket", "Fx Arkiv/Eksport · tomt felt for bibliotekets rod", 24, 303, 367, false)
 
-	heading("Adgang til SharePoint", 424, 95, 352)
+	heading("Adgang til SharePoint", 424, 95, 204)
+	button(idAutoSetup, "Tilslut SharePoint…", 626, 92, 150)
 	edit(idTenant, "Lejer-id (Tenant ID)", "", 424, 129, 352, false)
 	edit(idClient, "Program-id (Client ID)", "", 424, 187, 352, false)
 	edit(idDrive, "Biblioteks-id (valgfrit)", "Graph-id, kan bruges i stedet for bibliotekets navn", 424, 245, 352, false)
@@ -347,12 +355,14 @@ func (d *desktop) fill(cfg config) {
 	} {
 		setText(d.controls[id], value)
 	}
+	checked := uintptr(0)
 	if cfg.DeleteLocal {
-		sendMessage.Call(d.controls[idDelete], bmSetCheck, 1, 0)
+		checked = 1
 	}
+	sendMessage.Call(d.controls[idDelete], bmSetCheck, checked, 0)
 }
 
-func (d *desktop) values() (config, error) {
+func (d *desktop) formValues() (config, error) {
 	text := func(id uintptr) string { return strings.TrimSpace(windowText(d.controls[id])) }
 	interval, err := strconv.Atoi(text(idInterval))
 	if err != nil {
@@ -363,12 +373,20 @@ func (d *desktop) values() (config, error) {
 		return config{}, errors.New("Indtast ventetiden i hele sekunder.")
 	}
 	deleteLocal, _, _ := sendMessage.Call(d.controls[idDelete], bmGetCheck, 0, 0)
-	return validateConfig(config{
+	return config{
 		LocalFolder: text(idSource), SiteURL: text(idSite), DocumentLibrary: text(idLibrary),
 		DestinationFolder: text(idFolder), TenantID: text(idTenant), ClientID: text(idClient),
 		DriveID: text(idDrive), IntervalMinutes: interval, MinimumFileAgeSeconds: quiet,
 		DeleteLocal: deleteLocal == 1,
-	}, d.filename, d.executable)
+	}, nil
+}
+
+func (d *desktop) values() (config, error) {
+	cfg, err := d.formValues()
+	if err != nil {
+		return cfg, err
+	}
+	return validateConfig(cfg, d.filename, d.executable)
 }
 
 func (d *desktop) command(id uintptr) {
@@ -392,6 +410,8 @@ func (d *desktop) command(id uintptr) {
 		d.openInNotepad(d.logTail.path)
 	case idFollowLog:
 		d.refreshLog()
+	case idAutoSetup:
+		d.startSharePointSetup()
 	case idCertificate:
 		d.perform("Opretter certifikat …", func(_ context.Context) (string, error) {
 			err := generateCertificate(dir)
@@ -424,6 +444,43 @@ func (d *desktop) command(id uintptr) {
 			}
 		}
 	}
+}
+
+func (d *desktop) startSharePointSetup() {
+	if d.cancel != nil {
+		return
+	}
+	cfg, err := d.formValues()
+	if err != nil {
+		d.show(err.Error())
+		return
+	}
+	if _, err := validateLocalConfig(cfg, d.filename, d.executable); err != nil {
+		d.show(err.Error())
+		return
+	}
+	link, err := parseSetupLink(cfg.SiteURL)
+	if err != nil {
+		d.show(err.Error())
+		return
+	}
+	if cfg.TenantID != "" && !uuidPattern.MatchString(cfg.TenantID) {
+		d.show("Ret eller ryd feltet Lejer-id, før du starter guiden.")
+		return
+	}
+	message := "Guiden åbner Microsoft-login og kan bede om administratorsamtykke til Graph PowerShell. Ved en ny forbindelse oprettes en Entra-app med skriveadgang på dette SharePoint-websted:\n\n" + link.site.String()
+	if d.unreadableConfig {
+		message += "\n\nGuiden erstatter de tidligere indstillinger, som ikke kunne læses."
+	}
+	if !confirm(d.window, message) {
+		return
+	}
+	d.reloadAfterSetup = true
+	d.perform("SharePoint-opsætning i gang. Følg trinnene i live-loggen.", func(ctx context.Context) (string, error) {
+		services := setupServices{connect: connectPowerShellGraph, verify: verifySetupConnection}
+		err := services.configure(ctx, cfg, link, d.filename, d.executable)
+		return "SharePoint er tilsluttet. Indstillingerne er gemt.", err
+	})
 }
 
 func (d *desktop) openInNotepad(path string) {
@@ -460,7 +517,7 @@ func (d *desktop) show(text string) {
 func (d *desktop) updateControls() {
 	ready := d.cancel == nil
 	for _, id := range []uintptr{idSource, idSite, idLibrary, idFolder, idTenant, idClient, idDrive,
-		idInterval, idQuiet, idDelete, idBrowse, idSave, idCheck, idTry} {
+		idInterval, idQuiet, idDelete, idBrowse, idSave, idCheck, idTry, idAutoSetup} {
 		setEnabled(d.controls[id], ready)
 	}
 	dir := filepath.Dir(d.filename)
@@ -494,12 +551,12 @@ func (d *desktop) perform(working string, action func(context.Context) (string, 
 	go func() {
 		text, err := action(ctx)
 		switch {
-		case ctx.Err() != nil:
+		case err == context.Canceled || (err == nil && text == "" && ctx.Err() != nil):
 			text = "Kørslen er stoppet."
 		case err != nil:
 			text = "Fejl. " + err.Error()
 		}
-		d.done <- text
+		d.done <- desktopResult{text: text, ok: err == nil}
 		postMessage.Call(d.window, wmAppWork, 0, 0)
 	}()
 }
@@ -511,7 +568,7 @@ func (d *desktop) stop() {
 	d.show("Stopper den aktive kørsel …")
 }
 
-func (d *desktop) finishWork(text string) {
+func (d *desktop) finishWork(result desktopResult) {
 	d.cancel()
 	d.cancel = nil
 	d.stopRequested = false
@@ -520,8 +577,20 @@ func (d *desktop) finishWork(text string) {
 		destroyWindow.Call(d.window)
 		return
 	}
-	if text != "" {
-		d.show(text)
+	if d.reloadAfterSetup {
+		d.reloadAfterSetup = false
+		if result.ok {
+			cfg, err := readConfig(d.filename)
+			if err == nil {
+				d.fill(cfg)
+				d.unreadableConfig = false
+			} else {
+				result.text = "Indstillingerne kunne ikke genindlæses. " + err.Error()
+			}
+		}
+	}
+	if result.text != "" {
+		d.show(result.text)
 	}
 	d.refreshLog()
 }
